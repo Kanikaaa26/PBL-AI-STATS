@@ -1,14 +1,18 @@
-from app.preprocess import load_and_preprocess_metadata
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report
-from imblearn.over_sampling import RandomOverSampler
-import shap
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import shap
+import joblib
 
-# ✅ Feature names from .names file (32 features)
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+from imblearn.over_sampling import RandomOverSampler
+
+from app.preprocess import load_and_preprocess_metadata
+
+# ✅ Feature names
 feature_names = [
     "erythema", "scaling", "definite borders", "itching", "koebner phenomenon", 
     "polygonal papules", "follicular papules", "oral mucosal involvement", 
@@ -23,23 +27,18 @@ feature_names = [
     "perifollicular parakeratosis", "inflammatory monoluclear infiltrate"
 ]
 
-# ✅ Load and preprocess data
+# ✅ Load and preprocess
 X, y = load_and_preprocess_metadata('data/dermatology.csv')
 print("Shape of features:", X.shape)
 print("Shape of labels:", y.shape)
 
-# ✅ Balance dataset using RandomOverSampler
+# ✅ Balance
 ros = RandomOverSampler(random_state=42)
 X, y = ros.fit_resample(X, y)
-print("Shape of balanced features:", X.shape)
-print("Shape of balanced labels:", y.shape)
+print("Balanced shape:", X.shape, y.shape)
 
-# ✅ Split data
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-
-# ✅ Convert to DataFrames with feature names
+# ✅ Split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 X_train_df = pd.DataFrame(X_train, columns=feature_names)
 X_test_df = pd.DataFrame(X_test, columns=feature_names)
 
@@ -47,47 +46,59 @@ X_test_df = pd.DataFrame(X_test, columns=feature_names)
 model = RandomForestClassifier(random_state=42, class_weight='balanced')
 model.fit(X_train_df, y_train)
 
-# ✅ Evaluate model
+# ✅ Evaluate
 y_pred = model.predict(X_test_df)
-print("\nModel Evaluation:")
-print(classification_report(y_test, y_pred, zero_division=1))
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+print("Accuracy:", accuracy_score(y_test, y_pred))
 
-# ✅ SHAP Explainability
+# ✅ Save model
+os.makedirs("models", exist_ok=True)
+joblib.dump(model, "models/rf_model.pkl")
+print("✅ Model saved to models/rf_model.pkl")
+
+# ✅ SHAP
+print("\n🔍 Computing SHAP values...")
 explainer = shap.TreeExplainer(model, X_train_df)
 shap_values = explainer.shap_values(X_test_df, check_additivity=False)
-shap_values = np.array(shap_values)  # Ensure NumPy array
-
-print("Actual full SHAP shape:", shap_values.shape)  # Should be (232, 32, 4)
-
-# ✅ Loop over all classes
 shap.initjs()
-num_classes = shap_values.shape[2]  # shape = (n_samples, n_features, n_classes)
 
-for class_idx in range(num_classes):
-    print(f"\n📊 SHAP Summary for Class {class_idx}")
-    
-    # Correctly slice SHAP values for the class
-    shap_values_class = shap_values[:, :, class_idx]  # (samples, features)
+print("SHAP values type:", type(shap_values))
+print("SHAP values shape:", shap_values.shape)  # Should be (232, 32, 4)
+print("X_test_df shape:", X_test_df.shape)
 
-    # ✅ Summary Plot (Bar)
-    plt.figure()
-    shap.summary_plot(shap_values_class, X_test_df, plot_type="bar", show=False)
-    plt.title(f"SHAP Summary Plot - Class {class_idx}")
-    plt.tight_layout()
-    plt.savefig(f"shap_summary_class_{class_idx}.png")
-    plt.close()
+# ✅ SHAP 3D Fix
+os.makedirs("outputs", exist_ok=True)
+num_classes = shap_values.shape[2] if len(shap_values.shape) == 3 else 0
+unique_classes = np.unique(y_train)
 
-    # ✅ Force Plot (for first instance)
-    force_plot = shap.force_plot(
-    explainer.expected_value[class_idx],
-    shap_values_class[0],
-    X_test_df.iloc[0],
-    matplotlib=False  
-)
+for class_idx in unique_classes:
+    print(f"\n📊 Generating SHAP plots for class {class_idx}...")
+    try:
+        shap_vals_class = shap_values[:, :, class_idx]
 
-# Save interactive HTML
-shap.save_html(f"shap_force_plot_class_{class_idx}_instance_0.html", force_plot)
-print(f"✅ Saved interactive SHAP force plot for class {class_idx} at shap_force_plot_class_{class_idx}_instance_0.html")
-print(f"✅ Saved SHAP summary & force plot for class {class_idx}")
+        if shap_vals_class.shape != X_test_df.shape:
+            print(f"❌ Shape mismatch for class {class_idx}: {shap_vals_class.shape} vs {X_test_df.shape}")
+            continue
 
-print("\n✅ All SHAP visualizations generated and saved successfully.")
+        # Summary plot
+        plt.figure()
+        shap.summary_plot(shap_vals_class, X_test_df, plot_type="bar", show=False)
+        plt.title(f"SHAP Summary - Class {class_idx}")
+        plt.tight_layout()
+        plt.savefig(f"outputs/shap_summary_class_{class_idx}.png")
+        plt.close()
+
+        # Force plot
+        force_plot = shap.force_plot(
+            explainer.expected_value[class_idx],
+            shap_vals_class[0],
+            X_test_df.iloc[0],
+            matplotlib=False
+        )
+        shap.save_html(f"outputs/shap_force_plot_class_{class_idx}_instance_0.html", force_plot)
+
+        print(f"✅ Saved SHAP plots for class {class_idx}")
+
+    except Exception as e:
+        print(f"❌ Failed for class {class_idx}: {e}")
